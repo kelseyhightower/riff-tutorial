@@ -1,0 +1,10 @@
+apiVersion: projectriff.io/v1
+kind: Function
+metadata:
+  name: helloriff
+spec:
+  container:
+    image: gcr.io/hightowerlabs/helloriff:0.0.1
+  input: helloriff
+  protocol: http
+  idleTimeoutMs: 60000

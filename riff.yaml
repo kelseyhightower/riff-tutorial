@@ -1,0 +1,352 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: riff
+  labels:
+    istio-injection: enabled
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: riff
+  namespace: riff
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: riff
+  namespace: riff
+rules:
+  - apiGroups: [""]
+    resources: ["services", "pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["extensions"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+  - apiGroups: ["projectriff.io"]
+    resources: ["functions", "topics"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: riff
+  namespace: riff
+subjects:
+  - kind: ServiceAccount
+    name: riff
+roleRef:
+  kind: Role
+  name: riff
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: riff
+rules:
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+  - apiGroups: ["extensions"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+  - apiGroups: ["projectriff.io"]
+    resources: ["functions", "topics"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: riff
+subjects:
+  - kind: ServiceAccount
+    name: riff
+    namespace: riff
+roleRef:
+  kind: ClusterRole
+  name: riff
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apiextensions.k8s.io/v1beta1
+kind: CustomResourceDefinition
+metadata:
+  name: functions.projectriff.io
+versions:
+  - name: v1
+spec:
+  scope: Namespaced
+  group: projectriff.io
+  version: v1
+  names:
+    kind: Function
+    plural: functions
+    singular: function
+---
+apiVersion: apiextensions.k8s.io/v1beta1
+kind: CustomResourceDefinition
+metadata:
+  name: topics.projectriff.io
+versions:
+  - name: v1
+spec:
+  scope: Namespaced
+  group: projectriff.io
+  version: v1
+  names:
+    kind: Topic
+    plural: topics
+    singular: topic
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: http-gateway
+  namespace: riff
+  labels:
+    app: http-gateway
+spec:
+  ports:
+    - port: 80
+      name: http
+      targetPort: 8080
+    - port: 443
+      name: https
+      targetPort: 8443
+  selector:
+    app: http-gateway
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: riff
+  labels:
+    app: kafka
+spec:
+  ports:
+    - port: 9092
+      name: kafka-port
+      targetPort: 9092
+      protocol: TCP
+  selector:
+    app: kafka
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zookeeper
+  namespace: riff
+  labels:
+    app: zookeeper
+spec:
+  ports:
+    - port: 2181
+      name: zookeeper-port
+      targetPort: 2181
+      protocol: TCP
+  selector:
+    app: zookeeper
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: zookeeper
+  name: zookeeper
+  namespace: riff
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zookeeper
+  template:
+    metadata:
+      labels:
+        app: zookeeper
+    spec:
+      containers:
+        - name: zookeeper
+          image: wurstmeister/zookeeper:3.4.6
+          ports:
+            - containerPort: 2181
+          env:
+            - name: ZOOKEEPER_ID
+              value: "1"
+            - name: ZOOKEEPER_SERVER_1
+              value: zookeeper
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: kafka
+  name: kafka-broker
+  namespace: riff
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      containers:
+        - name: kafka
+          image: wurstmeister/kafka:0.11.0.1
+          ports:
+            - containerPort: 9092
+          env:
+            - name: KAFKA_PORT
+              value: "9092"
+            - name: KAFKA_ADVERTISED_PORT
+              value: "9092"
+            - name: KAFKA_ADVERTISED_HOST_NAME
+              value: "kafka.riff.svc.cluster.local"
+            - name: KAFKA_ZOOKEEPER_CONNECT
+              value: zookeeper:2181
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: function-controller
+  namespace: riff
+  labels:
+    app: function-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: function-controller
+  template:
+    metadata:
+      name: function-controller
+      labels:
+        app: function-controller
+    spec:
+      serviceAccountName: riff
+      containers:
+        - image: projectriff/function-controller:0.0.3
+          name: function-controller
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          env:
+            - name: KAFKA_BROKERS
+              value: kafka.riff.svc.cluster.local:9092
+            - name: RIFF_FUNCTION_SIDECAR_TAG
+              value: 0.0.3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: topic-controller
+  namespace: riff
+  labels:
+    app: topic-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: topic-controller
+  template:
+    metadata:
+      name: topic-controller
+      labels:
+        app: topic-controller
+    spec:
+      serviceAccountName: riff
+      containers:
+        - image: projectriff/topic-controller:0.0.3
+          name: topic-controller
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          env:
+            - name: KAFKA_ZK_NODES
+              value: zookeeper:2181
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: http-gateway
+  namespace: riff
+  labels:
+    app: http-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: http-gateway
+  template:
+    metadata:
+      name: http-gateway
+      labels:
+        app: http-gateway
+    spec:
+      serviceAccountName: riff
+      containers:
+        - image: projectriff/http-gateway:0.0.3
+          name: http-gateway
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            httpGet:
+              path: /application/status
+              port: 8080
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /application/status
+              port: 8080
+            periodSeconds: 5
+          env:
+            - name: KAFKA_BROKERS
+              value: kafka.riff.svc.cluster.local:9092
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: http-gateway
+  namespace: riff
+  annotations:
+    kubernetes.io/ingress.class: istio
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /requests/.*
+            backend:
+              serviceName: http-gateway
+              servicePort: 80
